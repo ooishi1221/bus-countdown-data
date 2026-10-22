@@ -83,6 +83,26 @@ class ImportTests(unittest.TestCase):
             self.assertLessEqual(m['expires_at'],m['fetched_at']+14*86400)
             self.assertEqual(m['calendar_dates_end'],db_last_exception(folder/'out'/'schedule.sqlite'))
 
+    def test_stop_names_from_translations_are_added_and_optional(self):
+        def translations(t):
+            t['translations']=[dict(table_name='stops',field_name='stop_name',language=l,translation=v,record_id=r,record_sub_id='',field_value='')
+                for r,l,v in [('a','ja','あ'),('a','ja-Hrkt','えー'),('a','en','Ay'),('b','ja-Hrkt','びー'),('zzz','ja-Hrkt','ふめい'),('c','en','Sea')]]
+            t['translations'].append(dict(table_name='trips',field_name='trip_headsign',language='en',translation='End',record_id='t1',record_sub_id='',field_value=''))
+        with tempfile.TemporaryDirectory() as temp:
+            folder=Path(temp);source,meta=self.fixture(folder,translations);out=folder/'out'/'schedule.sqlite'
+            m=convert(source,out,meta)
+            with sqlite3.connect(out) as db:
+                # 読みがある停留所だけ。英語名しかない c と、未知の停留所 zzz は行を作らない。
+                self.assertEqual(db.execute('SELECT stop,reading,english FROM stop_names ORDER BY stop').fetchall(),[('a','えー','Ay'),('b','びー','')])
+                self.assertEqual(db.execute('PRAGMA user_version').fetchone()[0],1)
+                self.assertEqual(db.execute('PRAGMA foreign_key_check').fetchall(),[])
+            self.assertEqual(m['counts']['stop_names'],2)
+        with tempfile.TemporaryDirectory() as temp:
+            folder=Path(temp);source,meta=self.fixture(folder);out=folder/'out'/'schedule.sqlite'
+            m=convert(source,out,meta)  # translations.txt が無い feed でも表は作る（空）
+            with sqlite3.connect(out) as db:self.assertEqual(db.execute('SELECT count(*) FROM stop_names').fetchone()[0],0)
+            self.assertEqual(m['counts']['stop_names'],0)
+
     def test_invalid_feed_is_rejected_without_published_output(self):
         cases=[lambda t:t['stop_times'][0].update(stop_id='missing'),
                lambda t:t['stop_times'][0].update(departure_time=''),

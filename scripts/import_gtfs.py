@@ -102,6 +102,7 @@ def convert(source, output, metadata):
                 CREATE TABLE agency(id TEXT PRIMARY KEY, name TEXT NOT NULL, timezone TEXT NOT NULL);
                 CREATE TABLE stops(id TEXT PRIMARY KEY, name TEXT NOT NULL, parent TEXT, platform TEXT NOT NULL,
                     kind INTEGER NOT NULL, lat REAL NOT NULL, lon REAL NOT NULL);
+                CREATE TABLE stop_names(stop TEXT PRIMARY KEY REFERENCES stops(id), reading TEXT NOT NULL, english TEXT NOT NULL) WITHOUT ROWID;
                 CREATE TABLE routes(id TEXT PRIMARY KEY, agency TEXT NOT NULL REFERENCES agency(id), name TEXT NOT NULL);
                 CREATE TABLE services(id TEXT PRIMARY KEY);
                 CREATE TABLE calendar(service TEXT PRIMARY KEY REFERENCES services(id), start TEXT NOT NULL,
@@ -127,6 +128,17 @@ def convert(source, output, metadata):
                 db.execute('INSERT INTO stops VALUES(?,?,?,?,?,?,?)', (s['stop_id'],s['stop_name'],s['parent_station'] or None,
                     s['platform_code'],int(s['location_type'] or '0'),lat,lon))
             require(not db.execute('SELECT 1 FROM stops s LEFT JOIN stops p ON s.parent=p.id WHERE s.parent IS NOT NULL AND p.id IS NULL').fetchone(), 'Missing parent')
+            # 停留所の読み（ひらがな）と英語名。検索（かな・ローマ字）用の足しの表で、既存の表は変えない。
+            # translations.txt が無い・読みの無い停留所は行を作らない（アプリ側は端末の読みに落ちる）。
+            names = {}
+            if 'translations.txt' in z.namelist():
+                for t in rows('translations'):
+                    if t['table_name'] == 'stops' and t['field_name'] == 'stop_name' and t['language'] in ('ja-Hrkt', 'en') and t['record_id']:
+                        names.setdefault(t['record_id'], {})[t['language']] = t['translation'].strip()
+            known = {r[0] for r in db.execute('SELECT id FROM stops')}
+            for stop_id, value in sorted(names.items()):
+                if stop_id in known and value.get('ja-Hrkt'):
+                    db.execute('INSERT INTO stop_names VALUES(?,?,?)', (stop_id, value['ja-Hrkt'], value.get('en', '')))
             for r in rows('routes'):
                 db.execute('INSERT INTO routes VALUES(?,?,?)', (r['route_id'],r['agency_id'],r['route_short_name'] or r['route_long_name']))
             calendars, exceptions = list(rows('calendar')), list(rows('calendar_dates'))
@@ -176,7 +188,7 @@ def convert(source, output, metadata):
             db.execute('CREATE INDEX departures_for_option ON stop_times(option) WHERE option IS NOT NULL')
             require(not db.execute('PRAGMA foreign_key_check').fetchone(), 'Broken references')
             require(db.execute('PRAGMA integrity_check').fetchone()==('ok',), 'DB integrity failed')
-            counts = {t:db.execute('SELECT count(*) FROM '+t).fetchone()[0] for t in ['stops','routes','trips','stop_times','options','calendar','exceptions']}
+            counts = {t:db.execute('SELECT count(*) FROM '+t).fetchone()[0] for t in ['stops','stop_names','routes','trips','stop_times','options','calendar','exceptions']}
             counts['over_24h'] = db.execute('SELECT count(*) FROM stop_times WHERE departure>=86400').fetchone()[0]
             db.commit()
             db.execute('VACUUM')
@@ -191,8 +203,9 @@ def convert(source, output, metadata):
                 content_sha256=content_sha256(candidate,end.isoformat()),counts=counts,
                 freshness_policy='最後に公式データを確認した日（verified_at）から14日、またはfeed終了・例外日の掲載終了の翌日まで。BusCountdown側の方針であり提供者の保証ではありません。',
                 transforms=['SQLite正規化・整数時刻化','stop_headsign優先','標柱と全停留所列・乗降条件・shapeによるパターン分離',
-                    '終端・予約制pickup除外（元行は保持）','停留所・系統の抽出、残り分数の計算'],
-                excluded_files=['shapes geometry','fares','translations','agency_jp','office_jp'])
+                    '終端・予約制pickup除外（元行は保持）','停留所・系統の抽出、残り分数の計算',
+                    '停留所名の読みと英語名（translations の stop_name、ja-Hrkt と en）'],
+                excluded_files=['shapes geometry','fares','translations（stop_name 以外）','agency_jp','office_jp'])
             # manifest の calendar_dates_end（期限の上限）は、DB の例外日の最終日と必ず一致させる。
             stored=db_last_exception(candidate)
             require(stored==(exception_days[-1].isoformat() if exception_days else None),'calendar_dates_end does not match the database')
