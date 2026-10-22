@@ -1,0 +1,30 @@
+name: Prepare Toei timetable
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '20 21 * * *'
+permissions:
+  contents: write
+concurrency:
+  group: timetable-release
+  cancel-in-progress: false
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Checkout public preparation scripts
+        run: gh repo clone "$GITHUB_REPOSITORY" source
+      - name: Test converter and prepare candidate
+        working-directory: source
+        run: |
+          python3 scripts/test_import_gtfs.py
+          python3 scripts/test_publish_release.py
+          python3 scripts/test_prepare_release.py
+          python3 scripts/prepare_release.py --output "$RUNNER_TEMP/timetable"
+      - name: Publish immutable version if new
+        working-directory: source
+        run: |
+          python3 scripts/publish_release.py "$RUNNER_TEMP/timetable/assets" --repository "$GITHUB_REPOSITORY"
