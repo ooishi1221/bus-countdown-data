@@ -2,6 +2,7 @@
 """Prepare local distribution assets from the approved Toei source; never publishes."""
 import argparse
 import datetime as dt
+import gzip
 import hashlib
 import json
 from pathlib import Path
@@ -23,6 +24,17 @@ class OfficialRedirect(urllib.request.HTTPRedirectHandler):
         if not approved_download(newurl):
             raise ValueError('Unexpected redirect target')
         return super().redirect_request(request, file, code, message, headers, newurl)
+
+
+def compress_database(source, destination):
+    """配布用の gzip。アプリ側の展開は付加情報なし（ファイル名・更新時刻なし）の gzip だけを受け付ける。"""
+    with open(source, 'rb') as f:
+        data = f.read()
+    with open(destination, 'wb') as out:
+        out.write(gzip.compress(data, compresslevel=9, mtime=0))
+    header = Path(destination).read_bytes()[:10]
+    if header[:4] != b'\x1f\x8b\x08\x00':
+        raise ValueError('Unexpected gzip header')
 
 
 def prepare(output, source=None, metadata=None):
@@ -78,12 +90,17 @@ License: https://creativecommons.org/licenses/by/4.0/
 BusCountdown normalizes GTFS to SQLite, separates boarding poles and trip patterns,
 retains calendars and exceptions, and excludes terminal/reservation-only departures
 from boarding options. source-manifest.json records source hashes, acquisition time,
-feed version and transformations. This is not an official transport-operator app.
-The seven-day expiry is an app policy, not an operator guarantee of accuracy.
+feed version and transformations; schedule.sqlite.gz is the gzip-compressed database.
+This is not an official transport-operator app.
+The fourteen-day expiry (counted from the last verification against the official data) is an
+app policy, not an operator guarantee of accuracy.
 No user locations or favorites are included.
 ''')
+    compress_database(assets / 'schedule.sqlite', assets / 'schedule.sqlite.gz')
     print(json.dumps(dict(version=manifest['feed_version'], assets=str(assets),
         database_bytes=(assets/'schedule.sqlite').stat().st_size,
+        compressed_bytes=(assets/'schedule.sqlite.gz').stat().st_size,
+        content_sha256=manifest['content_sha256'],
         source_sha256=manifest['source_sha256'],database_sha256=manifest['database_sha256'])))
     return manifest
 

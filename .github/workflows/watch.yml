@@ -1,0 +1,21 @@
+# Fails (GitHub's standard failed-workflow notification) when the daily verification has stopped.
+name: Check timetable freshness
+on:
+  workflow_dispatch:
+  schedule:
+    # 03:20 UTC = 12:20 JST, six hours after the daily update.
+    - cron: '20 3 * * *'
+permissions:
+  contents: read
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Checkout
+        run: gh repo clone "$GITHUB_REPOSITORY" source
+      - name: Fail if verification is older than 3 days
+        working-directory: source
+        run: python3 scripts/check_freshness.py verified.json

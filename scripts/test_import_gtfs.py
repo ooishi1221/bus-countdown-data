@@ -9,7 +9,7 @@ import sqlite3
 import tempfile
 import unittest
 import zipfile
-from import_gtfs import SOURCE, convert, digest, seconds
+from import_gtfs import SOURCE, convert, digest, seconds, db_last_exception
 
 class ImportTests(unittest.TestCase):
     def fixture(self, folder, change=None):
@@ -52,6 +52,36 @@ class ImportTests(unittest.TestCase):
             before=output.read_bytes()
             with self.assertRaises(ValueError):convert(source,output,meta)
             self.assertEqual(before,output.read_bytes())
+
+    def test_content_hash_ignores_rebuilt_zip_but_not_timetable_changes(self):
+        with tempfile.TemporaryDirectory() as temp:
+            folder=Path(temp)
+            (folder/'a').mkdir();(folder/'b').mkdir();(folder/'c').mkdir()
+            def run(name,change=None):
+                source,meta=self.fixture(folder/name,change)
+                return convert(source,folder/name/'out'/'schedule.sqlite',meta)
+            a=run('a')
+            # 同じ中身で、feed_version とZIPのバイト列だけが違う（公式が毎日作り直す場合）
+            def rebuilt(t):
+                t['feed_info'][0]['feed_version']='synthetic-test-rebuilt'
+                t['stops'].reverse();t['trips'].reverse()
+            b=run('b',rebuilt)
+            self.assertNotEqual(a['source_sha256'],b['source_sha256'])
+            self.assertEqual(a['content_sha256'],b['content_sha256'])
+            changed=run('c',lambda t:t['stop_times'][0].update(departure_time='24:11:00',arrival_time='24:11:00'))
+            self.assertNotEqual(a['content_sha256'],changed['content_sha256'])
+
+    def test_expiry_is_capped_by_last_exception_day_and_records_verification(self):
+        with tempfile.TemporaryDirectory() as temp:
+            folder=Path(temp)
+            source,meta=self.fixture(folder)
+            m=convert(source,folder/'out'/'schedule.sqlite',meta)
+            self.assertEqual(m['verified_at'],m['fetched_at'])
+            last=dt.date.fromisoformat(m['calendar_dates_end'])
+            cap=dt.datetime.combine(last+dt.timedelta(days=1),dt.time(),dt.timezone(dt.timedelta(hours=9))).timestamp()
+            self.assertLessEqual(m['expires_at'],cap)
+            self.assertLessEqual(m['expires_at'],m['fetched_at']+14*86400)
+            self.assertEqual(m['calendar_dates_end'],db_last_exception(folder/'out'/'schedule.sqlite'))
 
     def test_invalid_feed_is_rejected_without_published_output(self):
         cases=[lambda t:t['stop_times'][0].update(stop_id='missing'),

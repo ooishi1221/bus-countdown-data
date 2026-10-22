@@ -19,6 +19,8 @@ import tempfile
 import zipfile
 from zoneinfo import ZoneInfo
 
+from content_hash import content_sha256
+
 SOURCE = 'https://api-public.odpt.org/api/v4/files/Toei/data/ToeiBus-GTFS.zip'
 CATALOG = 'https://ckan.odpt.org/dataset/b_bus_gtfs_jp-toei'
 LICENSE = 'https://creativecommons.org/licenses/by/4.0/'
@@ -44,6 +46,15 @@ def seconds(value):
 def digest(path):
     with open(path, 'rb') as f:
         return hashlib.file_digest(f, 'sha256').hexdigest()
+
+
+def db_last_exception(path):
+    db = sqlite3.connect(f'file:{path}?mode=ro', uri=True)
+    try:
+        value = db.execute('SELECT max(date) FROM exceptions').fetchone()[0]
+    finally:
+        db.close()
+    return f'{value[:4]}-{value[4:6]}-{value[6:]}' if value else None
 
 
 def convert(source, output, metadata):
@@ -73,7 +84,13 @@ def convert(source, output, metadata):
         start, end = day(feed['feed_start_date']), day(feed['feed_end_date'])
         require(start <= end, 'Reversed feed range')
         valid_from = dt.datetime.combine(start, dt.time(), JST)
-        expires = min(dt.datetime.combine(end + dt.timedelta(days=1), dt.time(), JST), fetched + dt.timedelta(days=7))
+        # 表示期限の上限。calendar_dates（祝日などの例外日）が最後に載っている日の翌日0時まで。
+        # それより先は例外日が未掲載で、運行日を取り違えるおそれがあるため延長しても使わない。
+        exception_days = sorted({day(r['date']) for r in rows('calendar_dates')})
+        horizon = dt.datetime.combine(end + dt.timedelta(days=1), dt.time(), JST)
+        if exception_days:
+            horizon = min(horizon, dt.datetime.combine(exception_days[-1] + dt.timedelta(days=1), dt.time(), JST))
+        expires = min(horizon, fetched + dt.timedelta(days=14))
         require(valid_from < expires, 'Empty usable interval')
         output.parent.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(dir=output.parent) as temp:
@@ -166,13 +183,19 @@ def convert(source, output, metadata):
             db.close()
             manifest = dict(schema_version=1,source_url=SOURCE,catalog_url=CATALOG,license_url=LICENSE,
                 attribution='東京都交通局・公共交通オープンデータ協議会',attributions=list(rows('attributions')),
-                fetched_at=fetched.timestamp(),valid_from=valid_from.timestamp(),expires_at=expires.timestamp(),
-                feed_start=start.isoformat(),feed_end=end.isoformat(),feed_version=feed['feed_version'],
-                source_sha256=acquisition['sha256'],database_sha256=digest(candidate),counts=counts,
-                freshness_policy='取得から7日またはfeed終了翌日まで。BusCountdown側の方針であり提供者の保証ではありません。',
+                fetched_at=fetched.timestamp(),verified_at=fetched.timestamp(),valid_from=valid_from.timestamp(),expires_at=expires.timestamp(),
+                feed_start=start.isoformat(),feed_end=end.isoformat(),
+                calendar_dates_end=exception_days[-1].isoformat() if exception_days else None,
+                feed_version=feed['feed_version'],
+                source_sha256=acquisition['sha256'],database_sha256=digest(candidate),
+                content_sha256=content_sha256(candidate,end.isoformat()),counts=counts,
+                freshness_policy='最後に公式データを確認した日（verified_at）から14日、またはfeed終了・例外日の掲載終了の翌日まで。BusCountdown側の方針であり提供者の保証ではありません。',
                 transforms=['SQLite正規化・整数時刻化','stop_headsign優先','標柱と全停留所列・乗降条件・shapeによるパターン分離',
                     '終端・予約制pickup除外（元行は保持）','停留所・系統の抽出、残り分数の計算'],
                 excluded_files=['shapes geometry','fares','translations','agency_jp','office_jp'])
+            # manifest の calendar_dates_end（期限の上限）は、DB の例外日の最終日と必ず一致させる。
+            stored=db_last_exception(candidate)
+            require(stored==(exception_days[-1].isoformat() if exception_days else None),'calendar_dates_end does not match the database')
             candidate.rename(output)
             manifest_path.write_text(json.dumps(manifest,ensure_ascii=False,indent=2)+'\n')
             return manifest
