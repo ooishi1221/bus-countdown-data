@@ -1,0 +1,3 @@
+# Python regenerates these for each interpreter and checkout.
+__pycache__/
+*.py[cod]
