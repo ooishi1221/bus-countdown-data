@@ -1,8 +1,8 @@
 {
   "schema": 1,
-  "feed_version": "20261111_030718",
-  "content_sha256": "74db52cfc91fb627e5d4b4af18a6543f2bcacbe6f923250026782291d37f5127",
-  "verified_at": 1794359913.78604,
+  "feed_version": "20261112_030725",
+  "content_sha256": "7d3981b9b018d3943835d06761c045f078bf0b33a89ab1ec15b31720a2e2c687",
+  "verified_at": 1794449908.84778,
   "calendar_dates_end": "2027-01-05",
-  "release": "20261111_030718"
+  "release": "20261112_030725"
 }
